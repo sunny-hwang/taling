@@ -1,0 +1,166 @@
+ndap461
+	일반테이블 / 암호화테이블 / 
+	
+	json udf
+	- hiverc 파일 수정후 재시작 필요없음
+
+
+	db
+		- 후 왜 싱크 안맞냐고 클러스터링은 되어있는디.
+		- 걍 백업 복구함 
+		- clustercheck 스크립트에서 username, password 직접 세팅 
+		
+	hive-metastore
+		- workbench에서 쿼리 오류남 / 테이블 기본정보 보는 것도 에러남 
+		=> hive-site.xml metastore url 수정함
+			=> manage3:3306 -> manage3:3307
+		- 으악 다시 에러 
+		
+		- hiveserver 로그 보니까 커넥터 버전 안 맞았을 때 나는 에러랑 비슷 
+			- 근데 이번엔 METASTORE 부분에서.
+			=> connector 버전업 하니까 해결 
+		
+	
+hive패치
+	일반테이블 / 암호화테이블
+
+
+
+@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+
+db 백업
+
+	innobackupex --defaults-file=/etc/my.cnf \
+	--no-lock \
+	--user=root \
+	--password=root /root/sunny/percona_bak_ndap461
+
+
+ndap461 백업
+	ansible -i hosts all -m shell -a "cp -rf /usr/lib/ndap/security/ /root/sunny/ndap461_bak/"
+	ansible -i hosts all -m shell -a "cp -rf /etc/hadoop/conf/ /root/sunny/ndap461_bak/hadoop-conf"
+	ansible -i hosts all -m shell -a "cp -rf /etc/hive/conf/ /root/sunny/ndap461_bak/hive-conf"
+	ansible -i hosts all -m shell -a "cp -rf /etc/oozie/conf/ /root/sunny/ndap461_bak/oozie-conf"
+	ansible -i hosts all -m shell -a "cp -rf /etc/ranger/ /root/sunny/ndap461_bak/ranger-conf"
+	
+	ansible -i hosts all -m shell -a "cp -rf /etc/haproxy/ /root/sunny/ndap461_bak/haproxy"
+	ansible -i hosts all -m shell -a "cp /etc/my.cnf /root/sunny/ndap461_bak/"
+	
+	ansible -i hosts all -m shell -a "cp -rf /etc/ndap/conf/ /root/sunny/ndap461_bak/ndap-conf"
+	ansible -i hosts all -m shell -a "cp -rf /usr/lib/ndap/ /root/sunny/ndap461_bak/ndap"
+
+
+레포 업데이트 
+
+
+
+업그레이드 to 4.9.0
+	스탑한 후에, playbooks 업데이트 할 것.
+
+	db port 설정값 (ndap.yml, hive.yml)을 3307로 바꿈
+		근데 waiting for ndap server에서 에러남 당연히. Could not obtain connection to query metadata
+		haproxy 꺼져있는 상태니까.
+		그래서 중간에 haproxy 킴
+		여전히 안되네?
+
+	waiting for ndap server
+		library/ndap_api 에서 타임아웃 설정 늘리자.
+		근데 내부 vm들끼리는 내 놑북 환경(인터넷속도)이랑은 상관 없잖아. 단지 세션 계속 끊기는 것뿐(개빡 ㅜ). 타임아웃 문제는 아닌듯
+
+		The driver has not received any packets from the server.
+	
+		=> db.properties에 3307 포트로 해놨는데 3306으로 하니깐 되네 
+		왜 3307로는 안됨? 
+		
+	Reload Ndap Config For Ndap API Call
+		TASK [upgrade : Reload Ndap Config For Ndap API Call] **************************
+		fatal: [manage1.bc.com]: FAILED! => {"changed": false, "failed": true, "msg": 
+		"mssg : {\"message\":\"83001 : 
+		Failed to reload ndap configuration in host : http://manage2.bc.com:8080\",\
+		"detailMessage\":\"I/O error on PUT request for \\\"http://manage2.bc.com:8080/api/config?op=sync\\\": Read timed out; nested exception is java.net.SocketTimeoutException: Read timed out\",
+		\"debugMessage\":null}, 
+		url : http://manage1.bc.com:8080/api/config?op=reload"}
+
+
+		=> library/ndap_api 에서 타임아웃 설정 다시 보자!
+		=> https://d2.naver.com/helloworld/1469717
+		
+		=> 집와서 보니까 되어있네? 후 ?
+		
+		
+4.9.0
+	- cluster 메뉴에서 service 안 보임..
+		- metric 관련 테이블 조회해보면 updated 컬럼값들이 다 NULL
+			- 이건 정상이어도 null이네.
+		- Cache(ServiceCache) initialized, but has no entries.
+			http://nwiki.nexrcorp.com/pages/viewpage.action?pageId=41615871
+				- management 노드들 메모리 사용량 90% 넘음
+		- ndap-management 재시작하니까 뜸.
+			
+		- metric 관련 위키
+			http://nwiki.nexrcorp.com/pages/viewpage.action?pageId=51216811
+			
+	- udf 사용안됨 
+		http://nwiki.nexrcorp.com/display/Hive/NexR+Hive+UDFs+v2.7.0+-+User+Guide#NexRHiveUDFsv2.7.0-UserGuide-%EC%83%88%EB%A1%9C%EC%9A%B4%EA%B8%B0%EB%8A%A5
+		udf registration hive session 훅으로 함수 자동등록 된다는데
+		추가로 udf 사용하는 경우는 어케 등록하냐 
+		
+
+install-presto.yml
+		file.yml 에서 
+			Create Symbolic Link JDBC drivers For Hive
+			Setting All Hive Configuration Files
+			
+			건너뛰기
+			
+		haproxy 설정 잡는 task는 없음 
+		일단 수동으로 추가
+		혹은 어차피 4.10.1 에서 ssl 적용까지 한 proxy 설정 되니까. worker 설정에 coordinator 호스트네임을 mgmt1로 박고 테스트 해보자.
+		presto web에서 active worker는 coordinator 포함개수 
+		
+		presto 쿼리 
+			- 암호화 테이블은 써데 없어서 에러남 
+				presto:sunny> select * from korean_before_enc;
+
+				Query 20200125_103650_00008_94bwh, FAILED, 2 nodes
+				Splits: 17 total, 0 done (0.00%)
+				0:04 [0 rows, 0B] [0 rows/s, 0B/s]
+				
+				Query 20200125_103650_00008_94bwh failed: deserializer does not exist: org.apache.hadoop.hive.serde2.lazy.NexrEncryptedLazySimpleSerDe
+
+
+
+
+업그레이드 to 4.10.1
+
+	ndap-upgrade-4.10.0-4.10.1.sql
+		- ERROR 1060 (42S21) at line 6: Duplicate column name 'failed_login_count'
+		- ALTER ADD COLUMN ndap.user는 4.9.0-4.10.0.sql 에서 이미 함 
+		- 주석처리하고 ndap-upgrade-4.10.0-4.10.1.sql 이 쿼리만 수행했는데 이미 쿼리 수행되어있음
+			- 에러나면 db 테이블로 확인해볼것. 데이터 제대로 들갔는지.
+		
+		
+	- name: Upgrade ndap db to 4.10.1
+	  mysql_db: login_user={{ ndap_core_db.user }} login_password={{ ndap_core_db.user_password }} login_host={{ ndap_core_db.host }} name=ndap state=import target={{ item }}
+	  when: ansible_fqdn == groups['ndap_management'][0]
+	  with_items:
+		- /tmp/ndap-upgrade/ndap-upgrade-4.9.0-4.10.0.sql
+		- /tmp/ndap-upgrade/ndap-upgrade-4.10.0-4.10.1.sql
+
+	- workbench 메뉴 클릭해도..아무런 반응이 없어
+		-> 브라우저 캐시 삭제
+		
+		
+	- presto security 복붙
+		- ndap.security	
+			- 파일 소유자 presto:presto 확인
+		- ssh
+	
+		- /usr/lib/ndap/security/presto/ndap-truststore.jks (No such file or directory)
+		
+		
+	- udf 워크벤치에선 되는데 workflow에선 안됨 
+		- show functions 하니깐 sunny.sunnytest 이름으로 udf가 등록되었네? 
+		- cREATE FUNCTION hihi AS 'com.nexr.udf.JsonValueArray' using jar 'hdfs:///user/public/json-udf-test-5.jar' 쿼리를
+		  스키마 default로 놓고 날리자.
